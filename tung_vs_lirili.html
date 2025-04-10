@@ -60,8 +60,9 @@
         let playerBatAngle = 0, enemySwordAngle = 0;
         let lastPlayerAttackTime = 0, lastEnemyAttackTime = 0;
         let lastEnemyHitTime = 0; // Track when enemy was last hit
-        let playerAttackCooldown = 500; // ms
+        let playerAttackCooldown = 1000; // ms
         let enemyAttackCooldown = 2000; // 2 seconds between attacks
+        const batLength = 2.0; // Make batLength globally accessible
         
         // Camera control variables
         let isPointerLocked = false;
@@ -211,27 +212,28 @@
 
             // Position the player (adjust Y based on new model height)
             player.position.set(0, 0, arenaDepth / 2 - 2); // Keep base at Y=0
+            player.rotation.y = Math.PI; // Rotate 180 degrees around Y-axis to face the opposite direction
             scene.add(player);
             
             // Player's Baseball Bat (replaces sword)
             const batMaterial = new THREE.MeshStandardMaterial({ color: 0xD2B48C, roughness: 0.6 }); // Tan wood color
-            const batLength = 2.0;
             const batHandleRadius = 0.08;
             const batBarrelRadius = 0.12;
             
             // Create bat shape (cylinder)
             const batGeometry = new THREE.CylinderGeometry(batBarrelRadius, batHandleRadius, batLength, 16);
             playerBatMesh = new THREE.Mesh(batGeometry, batMaterial);
-            // Position bat geometry relative to its group center
-            playerBatMesh.position.y = batLength / 2; // Center the geometry origin
+            // Position bat geometry relative to group origin - handle at the bottom
+            playerBatMesh.position.y = batLength / 2;
             
             // Create bat group
             playerBat = new THREE.Group();
             playerBat.add(playerBatMesh);
             
-            // Position bat vertically in front of player
-            playerBat.position.set(0, drumHeight * 0.7, drumRadius + 0.3); // Position in front, slightly above center
-            playerBat.rotation.set(0, 0, 0); // No initial rotation, bat pointing up
+            // Position bat directly in front of the player (centered)
+            playerBat.position.set(0, drumHeight * 0.1, drumRadius);
+            // Initial rotation - bat is vertical (orthogonal to ground)
+            playerBat.rotation.set(0, 0, 0);
             player.add(playerBat);
 
             // Enemy (Lirilì Larilà - Composite Shape)
@@ -558,44 +560,61 @@
         function updateSwords(time) {
             // Update player bat swing
             if (playerBatSwinging) {
-                // Vertical downward swing animation (0 to PI/2)
+                // Simple up-to-down swing animation
                 playerBatAngle += 0.15;
-                // Calculate the target rotation (from 0 to PI/2)
-                const targetRotationX = Math.min(playerBatAngle, Math.PI / 2);
-                // Apply rotation directly to the bat mesh
-                playerBatMesh.rotation.x = targetRotationX;
+                const swingProgress = Math.min(playerBatAngle / (Math.PI / 2), 1.0);
                 
-                // Complete swing after reaching 90 degrees (PI/2)
-                if (playerBatAngle >= Math.PI / 2) {
+                // Simple X-axis rotation (front to back)
+                playerBat.rotation.x = swingProgress * Math.PI / 2;
+                
+                // Complete swing after reaching 90 degrees
+                if (swingProgress >= 1.0) {
                     playerBatSwinging = false;
-                    playerBatMesh.rotation.x = 0; // Reset rotation to vertical upward
+                    playerBat.rotation.set(0, 0, 0); // Reset to vertical position
                 }
                 
-                // Check for hit during active part of swing (middle of animation)
-                // Check between ~30 degrees and ~60 degrees (PI/6 to PI/3)
-                if (playerBatAngle > Math.PI / 6 && playerBatAngle < Math.PI / 3) { 
-                    // Calculate bat tip position in world space
-                    // Tip is at the top (positive Y) of the bat geometry initially
-                    const batTipLocal = new THREE.Vector3(0, batLength, 0);
-                    const batTipWorld = playerBatMesh.localToWorld(batTipLocal.clone()); // Use clone
+                // Check for hit during the entire swing with emphasis on downward portion
+                if (swingProgress > 0.2 && swingProgress < 0.8) { 
+                    // Calculate bat tip position in world space using trigonometry
+                    const currentAngle = swingProgress * Math.PI / 2; // Angle in radians (0 to PI/2)
+                    // Local position relative to pivot (handle base): y = L*cos(angle), z = L*sin(angle)
+                    const batTipLocal = new THREE.Vector3(
+                        0, 
+                        batLength * Math.cos(currentAngle),
+                        batLength * Math.sin(currentAngle)
+                    );
+                    const batTipWorld = playerBat.localToWorld(batTipLocal.clone());
                     
-                    // Debugging bat tip position
-                    // console.log("Bat Tip World:", batTipWorld);
-                    // console.log("Enemy Position:", enemy.position);
-                    // console.log("Distance:", batTipWorld.distanceTo(enemy.position));
-
-                    // Check if bat hit enemy
-                    if (batTipWorld.distanceTo(enemy.position) < 2.0) { // Adjusted hit range for vertical swing
+                    // For debugging - show bat tip position and collision info
+                    console.log(
+                        `Swing: ${swingProgress.toFixed(2)} ` +
+                        `Angle: ${(currentAngle * 180/Math.PI).toFixed(0)}° ` +
+                        `TipLocal: (${batTipLocal.x.toFixed(1)}, ${batTipLocal.y.toFixed(1)}, ${batTipLocal.z.toFixed(1)}) ` +
+                        `TipWorld: (${batTipWorld.x.toFixed(1)}, ${batTipWorld.y.toFixed(1)}, ${batTipWorld.z.toFixed(1)})`
+                    );
+                    
+                    // Check against enemy center
+                    const enemyCenter = enemy.position.clone().add(new THREE.Vector3(0, bodyHeight / 2, 0));
+                    const hitDistance = batTipWorld.distanceTo(enemyCenter);
+                    // Slightly reduced hit threshold for more precision
+                    const hitThreshold = bodyRadius + 0.7; 
+                    
+                    console.log(`Hit distance: ${hitDistance.toFixed(2)} / Threshold: ${hitThreshold}`);
+                    
+                    if (hitDistance < hitThreshold) {
                         if (enemyHealth > 0) {
-                            // To avoid multiple hits from a single swing, only count hits if the
-                            // player hasn't recently damaged the enemy
                             const currentTime = performance.now();
-                            if (!lastEnemyHitTime || currentTime - lastEnemyHitTime > 800) {
+                            // Keep reduced cooldown
+                            if (!lastEnemyHitTime || currentTime - lastEnemyHitTime > 500) {
                                 enemyHealth--;
                                 lastEnemyHitTime = currentTime;
                                 updateHealthDisplay();
                                 checkGameOver();
-                                console.log("PLAYER HIT ENEMY!"); // Add feedback
+                                console.log(`%cPLAYER HIT ENEMY! Remaining health: ${enemyHealth}`, 'color: lightgreen; font-weight: bold;');
+                                
+                                // Optional: Visual feedback - skip the rest of the swing
+                                playerBatSwinging = false;
+                                playerBat.rotation.set(0, 0, 0); // Reset to vertical position
                             }
                         }
                     }
@@ -787,7 +806,7 @@
              // Reset sword states
              playerBatSwinging = false;
              enemySwinging = false;
-             playerBatMesh.rotation.set(0, 0, 0); // Reset bat to vertical upward position
+             playerBat.rotation.set(0, 0, 0); // Reset bat to vertical position
              enemySwordHolder.rotation.set(Math.PI / 2, 0, 0); // Reset enemy sword rotation using the holder
 
              // Reset game state
