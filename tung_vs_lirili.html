@@ -1,0 +1,905 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Tung vs Lirili</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #f0f0f0; }
+        canvas { display: block; }
+        #info {
+            position: absolute;
+            top: 10px;
+            width: 100%;
+            text-align: center;
+            z-index: 100;
+            display:block;
+            color: #333;
+            font-family: Arial, sans-serif;
+            font-size: 16px;
+        }
+         #win-lose-alert {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background-color: rgba(0, 0, 0, 0.7);
+            color: white;
+            padding: 20px 40px;
+            border-radius: 10px;
+            font-size: 24px;
+            font-weight: bold;
+            text-align: center;
+            display: none; /* Hidden by default */
+            z-index: 200;
+        }
+        #win-lose-alert button {
+            margin-top: 15px;
+            padding: 10px 20px;
+            font-size: 18px;
+            cursor: pointer;
+        }
+    </style>
+</head>
+<body>
+    <div id="info">
+        Use Arrow keys to move (Left/Right/Up/Down), W to Jump, Spacebar to swing sword.<br>
+        Player Health: <span id="player-health">3</span> | Enemy Health: <span id="enemy-health">5</span>
+    </div>
+     <div id="win-lose-alert">
+        <p id="win-lose-message"></p>
+        <button onclick="resetGame()">Play Again</button>
+    </div>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script>
+        let scene, camera, renderer;
+        let player, enemy;
+        let playerBat, enemySword;
+        let playerBatMesh, enemyBlade;
+        let playerBatSwinging = false, enemySwinging = false;
+        let playerBatAngle = 0, enemySwordAngle = 0;
+        let lastPlayerAttackTime = 0, lastEnemyAttackTime = 0;
+        let lastEnemyHitTime = 0; // Track when enemy was last hit
+        let playerAttackCooldown = 500; // ms
+        let enemyAttackCooldown = 2000; // 2 seconds between attacks
+        
+        // Camera control variables
+        let isPointerLocked = false;
+        let yaw = 0; // Horizontal angle
+        let pitch = 0.3; // Vertical angle (start slightly tilted down)
+        const cameraDistance = 7; // Distance from player
+        const mouseSensitivity = 0.002;
+        
+        let playerHealth = 3, enemyHealth = 5;
+        const playerSpeed = 0.1;
+        
+        const arenaWidth = 80; // Increase arena bounds for movement
+        const arenaDepth = 80; // Increase arena bounds for movement
+        let keys = {};
+        
+        let lastEnemyMoveTime = 0;
+        let enemyMoveInterval = 1500; // ms
+        let gameOver = false;
+        // Enemy geometry constants - moved to top level scope
+        let headRadius, bodyHeight, bodyRadius;
+        // Texture loader
+        let textureLoader;
+
+        // Physics variables
+        const gravity = 0.01;
+        const jumpStrength = 0.2;
+        let playerVelocityY = 0;
+        let enemyVelocityY = 0;
+        let isOnGroundPlayer = true;
+        let isOnGroundEnemy = true;
+
+        // Add these variables for enemy attack handling if they don't exist
+        let enemyIsAttacking = false;
+        let enemyAttackStartTime = 0;
+        let enemyAttackDuration = 1000; // 1 second attack animation
+        let lastPlayerHitTime = 0;
+        let playerInvincibilityDuration = 1000; // 1 second invincibility duration
+
+        let enemySwordHolder;
+
+        function init() {
+            // Scene
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x87ceeb); // Sky blue background
+
+            // Initialize texture loader - use DataTexture instead of TextureLoader
+            textureLoader = new THREE.TextureLoader();
+            
+            // Create a placeholder texture directly (no external file loading)
+            const createPlaceholderTexture = () => {
+                // Create a small canvas with green cactus-like pattern
+                const canvas = document.createElement('canvas');
+                canvas.width = 128;
+                canvas.height = 256;
+                const ctx = canvas.getContext('2d');
+                
+                // Background color (light green)
+                ctx.fillStyle = '#2E8B57';
+                ctx.fillRect(0, 0, canvas.width, canvas.height);
+                
+                // Draw cactus-like pattern
+                ctx.fillStyle = '#275c45';
+                // Draw vertical ridges
+                for (let i = 0; i < 10; i++) {
+                    const x = 10 + i * 12;
+                    ctx.fillRect(x, 0, 3, canvas.height);
+                }
+                
+                // Draw elephant-like head
+                ctx.fillStyle = '#aaaaaa';
+                ctx.beginPath();
+                ctx.arc(canvas.width/2, 40, 25, 0, Math.PI * 2);
+                ctx.fill();
+                
+                // Draw trunk
+                ctx.fillStyle = '#888888';
+                ctx.beginPath();
+                ctx.moveTo(canvas.width/2, 60);
+                ctx.lineTo(canvas.width/2 - 10, 100);
+                ctx.lineTo(canvas.width/2 + 10, 100);
+                ctx.fill();
+                
+                // Create texture from canvas
+                const texture = new THREE.CanvasTexture(canvas);
+                return texture;
+            };
+            
+            const elephantCactusTexture = createPlaceholderTexture();
+
+            // Camera
+            camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+            // Initial position will be calculated in animate based on player pos and angles
+
+            // Renderer
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            document.body.appendChild(renderer.domElement);
+
+            // Lighting
+            const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+            scene.add(ambientLight);
+            const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
+            directionalLight.position.set(5, 10, 7.5);
+            scene.add(directionalLight);
+
+            // Ground
+            const groundGeometry = new THREE.PlaneGeometry(arenaWidth * 4, arenaDepth * 4);
+            const groundMaterial = new THREE.MeshStandardMaterial({ color: 0x228b22 }); // Forest green
+            const ground = new THREE.Mesh(groundGeometry, groundMaterial);
+            ground.rotation.x = -Math.PI / 2;
+            scene.add(ground);
+
+            // Player (Tung Tung Tung Sahur - Redesigned as slit drum)
+            player = new THREE.Group();
+            
+            // Drum body (main cylinder)
+            const drumHeight = 1.5;
+            const drumRadius = 0.6;
+            const drumGeometry = new THREE.CylinderGeometry(drumRadius, drumRadius, drumHeight, 32);
+            const drumMaterial = new THREE.MeshStandardMaterial({ color: 0x8B4513, roughness: 0.7 }); // Brown wood color
+            const drumBody = new THREE.Mesh(drumGeometry, drumMaterial);
+            drumBody.position.y = drumHeight / 2; // Position base at y=0
+            player.add(drumBody);
+            
+            // Slit detail
+            const slitGeometry = new THREE.BoxGeometry(0.1, drumHeight * 0.8, drumRadius * 0.5);
+            const slitMaterial = new THREE.MeshStandardMaterial({ color: 0x502A0B }); // Darker brown
+            const slit = new THREE.Mesh(slitGeometry, slitMaterial);
+            slit.position.y = drumHeight / 2;
+            slit.position.z = drumRadius - 0.05; // Place near the front edge
+            player.add(slit);
+            
+            // Add simple handle/feet (like in some slit drum designs) - LONGER FEET
+            const footHeight = 0.4; // Increased height
+            const footWidth = drumRadius * 0.3;
+            const footDepth = 0.3; // Increased depth
+            const footGeometry = new THREE.BoxGeometry(footWidth, footHeight, footDepth);
+            const footMaterial = new THREE.MeshStandardMaterial({ color: 0x654321 }); // Slightly different brown
+            
+            const footLeft = new THREE.Mesh(footGeometry, footMaterial);
+            footLeft.position.set(-drumRadius * 0.5, footHeight / 2, 0); // Adjusted position based on new height
+            player.add(footLeft);
+            
+            const footRight = new THREE.Mesh(footGeometry, footMaterial);
+            footRight.position.set(drumRadius * 0.5, footHeight / 2, 0); // Adjusted position based on new height
+            player.add(footRight);
+
+            // Position the player (adjust Y based on new model height)
+            player.position.set(0, 0, arenaDepth / 2 - 2); // Keep base at Y=0
+            scene.add(player);
+            
+            // Player's Baseball Bat (replaces sword)
+            const batMaterial = new THREE.MeshStandardMaterial({ color: 0xD2B48C, roughness: 0.6 }); // Tan wood color
+            const batLength = 2.0;
+            const batHandleRadius = 0.08;
+            const batBarrelRadius = 0.12;
+            
+            // Create bat shape (cylinder)
+            const batGeometry = new THREE.CylinderGeometry(batBarrelRadius, batHandleRadius, batLength, 16);
+            playerBatMesh = new THREE.Mesh(batGeometry, batMaterial);
+            // Position bat geometry relative to its group center
+            playerBatMesh.position.y = batLength / 2; // Center the geometry origin
+            
+            // Create bat group
+            playerBat = new THREE.Group();
+            playerBat.add(playerBatMesh);
+            
+            // Position bat vertically in front of player
+            playerBat.position.set(0, drumHeight * 0.7, drumRadius + 0.3); // Position in front, slightly above center
+            playerBat.rotation.set(0, 0, 0); // No initial rotation, bat pointing up
+            player.add(playerBat);
+
+            // Enemy (Lirilì Larilà - Composite Shape)
+            enemy = new THREE.Group();
+
+            // Materials for different parts
+            const bodyMaterial = new THREE.MeshStandardMaterial({ 
+                color: 0x2E8B57,
+                transparent: true,
+                opacity: 0.2 // Make the base cylinder semi-transparent
+            }); // SeaGreen for cactus body
+            
+            // Apply the generated texture directly
+            bodyMaterial.map = elephantCactusTexture;
+            bodyMaterial.color.set(0xffffff);
+            bodyMaterial.needsUpdate = true;
+            
+            const headMaterial = new THREE.MeshStandardMaterial({ color: 0x999999 }); // Light grey for elephant head
+            const trunkMaterial = new THREE.MeshStandardMaterial({ color: 0x888888 }); // Darker grey for trunk
+            const earMaterial = new THREE.MeshStandardMaterial({ color: 0xAAAAAA }); // Lighter grey for ears  
+            const sandalBaseMaterial = new THREE.MeshStandardMaterial({ color: 0xC06000 }); // Brown for sandal base
+            const sandalStrapMaterial = new THREE.MeshStandardMaterial({ color: 0xFF2222 }); // Red for sandal strap
+            const sandalStrap2Material = new THREE.MeshStandardMaterial({ color: 0xFFDD00 }); // Yellow for second strap
+
+            // Create a separate material for the texture planes with transparency
+            const texturePlaneMaterial = new THREE.MeshBasicMaterial({ 
+                transparent: true,
+                opacity: 1.0,
+                side: THREE.DoubleSide,
+                map: elephantCactusTexture // Use the same generated texture
+            });
+            
+            // Set sizes directly
+            const aspectRatio = 0.5; // Approximate aspect ratio for our placeholder
+            
+            // Assign values to top-level variables
+            bodyHeight = 2.6;
+            bodyRadius = 0.9;
+            headRadius = 0.7;
+
+            const trunkLength = 1.2;
+            const trunkRadius = 0.18;
+            const earSize = 0.6;
+            const earThickness = 0.1;
+            
+            const sandalHeight = 0.2;
+            const sandalWidth = 1.2;
+            const sandalDepth = 2.0; 
+            const sandalOffsetY = sandalHeight / 2;
+
+            // Body (Cylinder) - Main cactus body
+            const bodyGeometry = new THREE.CylinderGeometry(bodyRadius * 0.7, bodyRadius * 0.8, bodyHeight * 0.9, 16, 1, false);
+            const bodyMesh = new THREE.Mesh(bodyGeometry, bodyMaterial);
+            bodyMesh.position.y = sandalOffsetY + bodyHeight / 2;
+            
+            // Adjust UV mapping for better texture application
+            const uvAttribute = bodyGeometry.attributes.uv;
+            for (let i = 0; i < uvAttribute.count; i++) {
+                const u = uvAttribute.getX(i);
+                const v = uvAttribute.getY(i);
+                // Adjust UVs to better fit the main part of the texture
+                uvAttribute.setXY(i, u * 0.8 + 0.1, v * 0.7 + 0.1);
+            }
+            bodyGeometry.attributes.uv.needsUpdate = true;
+            
+            enemy.add(bodyMesh);
+
+            // Create a custom shaped geometry for better texture display
+            const bodyTextureGeometry = new THREE.PlaneGeometry(1, 1, 1, 1); // Use unit size, will scale when texture loads
+            const bodyTextureMesh = new THREE.Mesh(bodyTextureGeometry, texturePlaneMaterial);
+            bodyTextureMesh.position.set(0, sandalOffsetY + bodyHeight * 0.6, -bodyRadius * 0.4);
+            bodyTextureMesh.rotation.x = Math.PI * 0.05; // Slightly tilted
+            bodyTextureMesh.scale.set(aspectRatio * 2, 2, 1); // Set scale directly
+            enemy.add(bodyTextureMesh);
+            
+            // Add a complementary texture plane for the back
+            const bodyTextureBackGeometry = new THREE.PlaneGeometry(1, 1, 1, 1); // Use unit size, will scale when texture loads
+            const bodyTextureBackMesh = new THREE.Mesh(bodyTextureBackGeometry, texturePlaneMaterial.clone());
+            bodyTextureBackMesh.position.set(0, sandalOffsetY + bodyHeight * 0.6, bodyRadius * 0.4);
+            bodyTextureBackMesh.rotation.x = -Math.PI * 0.05; // Slightly tilted opposite
+            bodyTextureBackMesh.rotation.y = Math.PI; // Flipped 180 degrees
+            bodyTextureBackMesh.scale.set(aspectRatio * 2, 2, 1); // Set scale directly
+            enemy.add(bodyTextureBackMesh);
+
+            // Vertical ridges for cactus look - REDUCED NUMBER
+            for (let i = 0; i < 4; i++) {
+                const angle = (i / 4) * Math.PI * 2 + Math.PI/4; // Offset to not interfere with main texture
+                const ridgeGeometry = new THREE.BoxGeometry(0.1, bodyHeight * 0.8, 0.1);
+                const ridgeMesh = new THREE.Mesh(ridgeGeometry, bodyMaterial);
+                const xPos = Math.cos(angle) * (bodyRadius - 0.05);
+                const zPos = Math.sin(angle) * (bodyRadius - 0.05);
+                ridgeMesh.position.set(xPos, sandalOffsetY + bodyHeight / 2, zPos);
+                enemy.add(ridgeMesh);
+            }
+
+            // Head (Sphere) - Make elephant head less prominent to focus on texture
+            const headGeometry = new THREE.SphereGeometry(headRadius * 0.7, 24, 24);
+            const headMesh = new THREE.Mesh(headGeometry, headMaterial);
+            headMesh.position.y = sandalOffsetY + bodyHeight + headRadius * 0.6;
+            headMesh.position.z = -bodyRadius * 0.4;
+            enemy.add(headMesh);
+
+            // Trunk (Curved cylinder) - Make shorter to focus on texture
+            const trunkCurve = new THREE.CatmullRomCurve3([
+                new THREE.Vector3(0, 0, 0),
+                new THREE.Vector3(0, -trunkLength * 0.3, trunkLength * 0.1),
+                new THREE.Vector3(0, -trunkLength * 0.5, 0)
+            ]);
+            const trunkGeometry = new THREE.TubeGeometry(trunkCurve, 8, trunkRadius, 8, false);
+            const trunkMesh = new THREE.Mesh(trunkGeometry, trunkMaterial);
+            trunkMesh.position.set(0, headMesh.position.y, headMesh.position.z - headRadius * 0.8);
+            enemy.add(trunkMesh);
+
+            // Left Ear
+            const earLeftGeometry = new THREE.BoxGeometry(earSize, earSize, earThickness);
+            const earLeftMesh = new THREE.Mesh(earLeftGeometry, earMaterial);
+            earLeftMesh.position.set(-headRadius * 0.8, headMesh.position.y + headRadius * 0.3, headMesh.position.z);
+            earLeftMesh.rotation.z = Math.PI / 6;
+            enemy.add(earLeftMesh);
+
+            // Right Ear
+            const earRightGeometry = new THREE.BoxGeometry(earSize, earSize, earThickness);
+            const earRightMesh = new THREE.Mesh(earRightGeometry, earMaterial);
+            earRightMesh.position.set(headRadius * 0.8, headMesh.position.y + headRadius * 0.3, headMesh.position.z);
+            earRightMesh.rotation.z = -Math.PI / 6;
+            enemy.add(earRightMesh);
+
+            // Sandals (Left and Right)
+            const sandalBaseGeometry = new THREE.BoxGeometry(sandalWidth, sandalHeight, sandalDepth);
+            
+            // Left Sandal
+            const sandalLeftMesh = new THREE.Mesh(sandalBaseGeometry, sandalBaseMaterial);
+            sandalLeftMesh.position.set(-bodyRadius * 0.8, sandalOffsetY, 0);
+            enemy.add(sandalLeftMesh);
+            
+            // Left Sandal Straps
+            const strapLGeometry = new THREE.BoxGeometry(sandalWidth * 0.6, sandalHeight * 0.5, sandalWidth * 0.3);
+            const strapLeftMesh = new THREE.Mesh(strapLGeometry, sandalStrapMaterial);
+            strapLeftMesh.position.set(-bodyRadius * 0.8, sandalHeight * 1.5, sandalDepth * 0.2);
+            enemy.add(strapLeftMesh);
+            
+            const strap2LGeometry = new THREE.BoxGeometry(sandalWidth * 0.6, sandalHeight * 0.5, sandalWidth * 0.3);
+            const strap2LeftMesh = new THREE.Mesh(strap2LGeometry, sandalStrap2Material);
+            strap2LeftMesh.position.set(-bodyRadius * 0.8, sandalHeight * 1.5, -sandalDepth * 0.2);
+            enemy.add(strap2LeftMesh);
+
+            // Right Sandal
+            const sandalRightMesh = new THREE.Mesh(sandalBaseGeometry, sandalBaseMaterial);
+            sandalRightMesh.position.set(bodyRadius * 0.8, sandalOffsetY, 0);
+            enemy.add(sandalRightMesh);
+            
+            // Right Sandal Straps
+            const strapRGeometry = new THREE.BoxGeometry(sandalWidth * 0.6, sandalHeight * 0.5, sandalWidth * 0.3);
+            const strapRightMesh = new THREE.Mesh(strapRGeometry, sandalStrapMaterial);
+            strapRightMesh.position.set(bodyRadius * 0.8, sandalHeight * 1.5, sandalDepth * 0.2);
+            enemy.add(strapRightMesh);
+            
+            const strap2RGeometry = new THREE.BoxGeometry(sandalWidth * 0.6, sandalHeight * 0.5, sandalWidth * 0.3);
+            const strap2RightMesh = new THREE.Mesh(strap2RGeometry, sandalStrap2Material);
+            strap2RightMesh.position.set(bodyRadius * 0.8, sandalHeight * 1.5, -sandalDepth * 0.2);
+            enemy.add(strap2RightMesh);
+
+            // Position the entire group
+            enemy.position.set(0, 0, -arenaDepth / 2 + 2);
+            enemy.rotation.y = Math.PI; // Rotate 180 degrees so front faces player
+            scene.add(enemy);
+
+            // Create enemy's sword
+            enemySwordHolder = createEnemySword();
+
+            // Event Listeners
+            document.addEventListener('keydown', onKeyDown);
+            document.addEventListener('keyup', onKeyUp);
+            window.addEventListener('resize', onWindowResize);
+            document.addEventListener('mousemove', onMouseMove);
+            renderer.domElement.addEventListener('click', () => {
+                renderer.domElement.requestPointerLock();
+            });
+            document.addEventListener('pointerlockchange', onPointerLockChange, false);
+
+            // Create obstacles in the environment
+            const createObstacles = () => {
+                // Materials for obstacles
+                const rockMaterial = new THREE.MeshStandardMaterial({ color: 0x888888 });
+                const treeTrunkMaterial = new THREE.MeshStandardMaterial({ color: 0x8B4513 });
+                const treeTopMaterial = new THREE.MeshStandardMaterial({ color: 0x006400 });
+                
+                // Create some boulders/rocks
+                for (let i = 0; i < 12; i++) {
+                    const rockSize = 0.5 + Math.random() * 1.5;
+                    const rockGeometry = new THREE.DodecahedronGeometry(rockSize, 1);
+                    const rock = new THREE.Mesh(rockGeometry, rockMaterial);
+                    
+                    // Position rocks randomly throughout the arena, but not too close to start positions
+                    let validPosition = false;
+                    let x, z;
+                    
+                    while (!validPosition) {
+                        x = (Math.random() - 0.5) * (arenaWidth - 10);
+                        z = (Math.random() - 0.5) * (arenaDepth - 10);
+                        
+                        // Make sure rocks aren't too close to player or enemy starting positions
+                        const distToPlayer = Math.sqrt(x*x + (z - arenaDepth/2 + 2)*(z - arenaDepth/2 + 2));
+                        const distToEnemy = Math.sqrt(x*x + (z + arenaDepth/2 - 2)*(z + arenaDepth/2 - 2));
+                        
+                        if (distToPlayer > 8 && distToEnemy > 8) {
+                            validPosition = true;
+                        }
+                    }
+                    
+                    rock.position.set(x, rockSize/2, z);
+                    rock.rotation.set(Math.random(), Math.random(), Math.random());
+                    scene.add(rock);
+                }
+                
+                // Create some trees
+                for (let i = 0; i < 8; i++) {
+                    const treeHeight = 3 + Math.random() * 2;
+                    const trunkGeometry = new THREE.CylinderGeometry(0.3, 0.4, treeHeight, 8);
+                    const trunk = new THREE.Mesh(trunkGeometry, treeTrunkMaterial);
+                    
+                    const topGeometry = new THREE.ConeGeometry(1.5, 3, 8);
+                    const top = new THREE.Mesh(topGeometry, treeTopMaterial);
+                    top.position.y = treeHeight/2 + 1;
+                    
+                    const tree = new THREE.Group();
+                    tree.add(trunk);
+                    tree.add(top);
+                    
+                    // Position trees randomly along the edges of the arena
+                    let x, z;
+                    const side = Math.floor(Math.random() * 4);
+                    
+                    switch(side) {
+                        case 0: // top
+                            x = (Math.random() - 0.5) * arenaWidth;
+                            z = -arenaDepth/2 + 10 + Math.random() * 5;
+                            break;
+                        case 1: // right
+                            x = arenaWidth/2 - 10 - Math.random() * 5;
+                            z = (Math.random() - 0.5) * arenaDepth;
+                            break;
+                        case 2: // bottom
+                            x = (Math.random() - 0.5) * arenaWidth;
+                            z = arenaDepth/2 - 10 - Math.random() * 5;
+                            break;
+                        case 3: // left
+                            x = -arenaWidth/2 + 10 + Math.random() * 5;
+                            z = (Math.random() - 0.5) * arenaDepth;
+                            break;
+                    }
+                    
+                    tree.position.set(x, 0, z);
+                    scene.add(tree);
+                }
+            };
+            
+            // Add the obstacles to the scene
+            createObstacles();
+
+            // Start animation loop
+            animate();
+        }
+
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+
+        function onKeyDown(event) {
+            keys[event.code] = true;
+            if (event.code === 'Space' && !gameOver && !playerBatSwinging && (performance.now() - lastPlayerAttackTime > playerAttackCooldown)) {
+                playerBatSwinging = true;
+                playerBatAngle = 0;
+                lastPlayerAttackTime = performance.now();
+            }
+            // Player Jump
+            if (event.code === 'KeyW' && isOnGroundPlayer && !gameOver) {
+                playerVelocityY = jumpStrength;
+                isOnGroundPlayer = false;
+            }
+        }
+
+        function onKeyUp(event) {
+            keys[event.code] = false;
+        }
+
+        function onMouseMove(event) {
+            if (!isPointerLocked) return;
+            
+            yaw -= event.movementX * mouseSensitivity;
+            pitch -= event.movementY * mouseSensitivity;
+            
+            // Clamp vertical angle (pitch) to prevent flipping
+            const maxPitch = Math.PI / 2 - 0.1; // Limit looking straight up/down
+            pitch = Math.max(-maxPitch, Math.min(maxPitch, pitch));
+        }
+
+        function onPointerLockChange() {
+            if (document.pointerLockElement === renderer.domElement) {
+                isPointerLocked = true;
+            } else {
+                isPointerLocked = false;
+            }
+        }
+
+        function updatePlayerPosition() {
+            if (keys['ArrowLeft'] && player.position.x > -arenaWidth / 2 + 0.5) {
+                player.position.x -= playerSpeed;
+            }
+            if (keys['ArrowRight'] && player.position.x < arenaWidth / 2 - 0.5) {
+                player.position.x += playerSpeed;
+            }
+            // Add forward/backward movement
+            if (keys['ArrowUp'] && player.position.z > -arenaDepth / 2 + 0.5) {
+                player.position.z -= playerSpeed;
+            }
+            if (keys['ArrowDown'] && player.position.z < arenaDepth / 2 - 0.5) {
+                player.position.z += playerSpeed;
+            }
+        }
+
+        function updateSwords(time) {
+            // Update player bat swing
+            if (playerBatSwinging) {
+                // Vertical downward swing animation (0 to PI/2)
+                playerBatAngle += 0.15;
+                // Calculate the target rotation (from 0 to PI/2)
+                const targetRotationX = Math.min(playerBatAngle, Math.PI / 2);
+                // Apply rotation directly to the bat mesh
+                playerBatMesh.rotation.x = targetRotationX;
+                
+                // Complete swing after reaching 90 degrees (PI/2)
+                if (playerBatAngle >= Math.PI / 2) {
+                    playerBatSwinging = false;
+                    playerBatMesh.rotation.x = 0; // Reset rotation to vertical upward
+                }
+                
+                // Check for hit during active part of swing (middle of animation)
+                // Check between ~30 degrees and ~60 degrees (PI/6 to PI/3)
+                if (playerBatAngle > Math.PI / 6 && playerBatAngle < Math.PI / 3) { 
+                    // Calculate bat tip position in world space
+                    // Tip is at the top (positive Y) of the bat geometry initially
+                    const batTipLocal = new THREE.Vector3(0, batLength, 0);
+                    const batTipWorld = playerBatMesh.localToWorld(batTipLocal.clone()); // Use clone
+                    
+                    // Debugging bat tip position
+                    // console.log("Bat Tip World:", batTipWorld);
+                    // console.log("Enemy Position:", enemy.position);
+                    // console.log("Distance:", batTipWorld.distanceTo(enemy.position));
+
+                    // Check if bat hit enemy
+                    if (batTipWorld.distanceTo(enemy.position) < 2.0) { // Adjusted hit range for vertical swing
+                        if (enemyHealth > 0) {
+                            // To avoid multiple hits from a single swing, only count hits if the
+                            // player hasn't recently damaged the enemy
+                            const currentTime = performance.now();
+                            if (!lastEnemyHitTime || currentTime - lastEnemyHitTime > 800) {
+                                enemyHealth--;
+                                lastEnemyHitTime = currentTime;
+                                updateHealthDisplay();
+                                checkGameOver();
+                                console.log("PLAYER HIT ENEMY!"); // Add feedback
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Enemy attack logic - Changed distance check to 3.0 to match movement logic
+            if (!enemySwinging && (time - lastEnemyAttackTime > enemyAttackCooldown) && 
+                enemy.position.distanceTo(player.position) < 3.0) { // Attack only when close
+                
+                enemySwinging = true;
+                enemySwordAngle = 0;
+                lastEnemyAttackTime = time;
+            }
+            
+            // Update enemy sword swing
+            if (enemySwinging) {
+                // Vertical swing animation
+                enemySwordAngle += 0.12;
+                // Keep sword in front of enemy while swinging
+                const swingRotation = Math.PI / 2 - Math.sin(enemySwordAngle) * Math.PI / 1.2;
+                // FIX: Use enemySwordHolder instead of enemySword
+                enemySwordHolder.rotation.x = swingRotation; 
+                
+                // Complete one swing
+                if (enemySwordAngle >= Math.PI) {
+                    enemySwinging = false;
+                    // FIX: Use enemySwordHolder instead of enemySword
+                    enemySwordHolder.rotation.x = Math.PI / 2; // Reset rotation 
+                }
+                
+                // Check for hit during active part of swing
+                if (enemySwordAngle > Math.PI / 3 && enemySwordAngle < Math.PI * 2/3) {
+                    // Calculate sword tip position in world space
+                    const swordTip = new THREE.Vector3(0, 0, -2.2); // Use sword blade length
+                    // FIX: Calculate world position relative to the blade inside the holder
+                    enemyBlade.getWorldPosition(swordTip); // Get world position of the blade's center
+                    
+                    // Approximate tip position (add direction vector * half blade length)
+                    const direction = new THREE.Vector3();
+                    enemyBlade.getWorldDirection(direction);
+                    swordTip.addScaledVector(direction, -1.1); // Move towards the tip
+
+                    // Debug - visualize sword tip (uncomment when debugging)
+                    // console.log("Enemy sword tip:", swordTip);
+                    // console.log("Player position:", player.position);
+                    // console.log("Distance:", swordTip.distanceTo(player.position));
+                    
+                    // Check if sword hit player - increased hit range slightly
+                    if (swordTip.distanceTo(player.position) < 1.5) { // Reduced hit range for melee
+                        if (playerHealth > 0 && time - lastPlayerHitTime > playerInvincibilityDuration) { // Check invincibility
+                            playerHealth--;
+                            lastPlayerHitTime = time; // Use 'time' from animate function
+                            updateHealthDisplay();
+                            checkGameOver();
+                            
+                            // Add visual feedback
+                            console.log("ENEMY HIT PLAYER!");
+                        }
+                    }
+                }
+            }
+        }
+
+        function updateEnemy() {
+            // Check if enemy is defeated
+            if (enemyHealth <= 0) return;
+            
+            const distanceToPlayer = enemy.position.distanceTo(player.position);
+            const currentTime = Date.now();
+            
+            // Update enemy movement and behavior
+            if (!enemyIsAttacking && distanceToPlayer < 15) { // Increased detection range
+                // Move towards player if not too close
+                if (distanceToPlayer > 3) {
+                    // Calculate direction vector to player
+                    const direction = new THREE.Vector3();
+                    direction.subVectors(player.position, enemy.position).normalize();
+                    
+                    // Move enemy towards player with fixed speed
+                    const enemySpeed = 0.05;
+                    enemy.position.x += direction.x * enemySpeed;
+                    enemy.position.z += direction.z * enemySpeed;
+                    
+                    // Ensure enemy stays within arena bounds
+                    enemy.position.x = Math.max(-arenaWidth / 2 + 1, Math.min(arenaWidth / 2 - 1, enemy.position.x));
+                    enemy.position.z = Math.max(-arenaDepth / 2 + 1, Math.min(arenaDepth / 2 - 1, enemy.position.z));
+                    
+                    // Rotate enemy to face player
+                    enemy.rotation.y = Math.atan2(
+                        player.position.x - enemy.position.x,
+                        player.position.z - enemy.position.z
+                    );
+                    
+                    // Debug info
+                    console.log("Enemy moving: ", {
+                        distance: distanceToPlayer,
+                        direction: direction,
+                        position: enemy.position.clone()
+                    });
+                } 
+                // Attack if close enough and cooldown has passed
+                else if (currentTime - lastEnemyAttackTime > enemyAttackCooldown) {
+                    // Start attack
+                    enemyIsAttacking = true;
+                    enemyAttackStartTime = currentTime;
+                    lastEnemyAttackTime = currentTime;
+                    console.log("Enemy attacking");
+                }
+            }
+            
+            // Handle attack animation if enemy is attacking
+            if (enemyIsAttacking) {
+                const attackProgress = (currentTime - enemyAttackStartTime) / enemyAttackDuration;
+                
+                if (attackProgress <= 1) {
+                    // Attack animation phases
+                    if (attackProgress < 0.3) {
+                        // Wind up phase - pull back
+                        enemySwordHolder.rotation.x = Math.PI / 2 - attackProgress * 2;
+                    } else if (attackProgress < 0.7) {
+                        // Strike phase - swing forward
+                        const swingProgress = (attackProgress - 0.3) / 0.4;
+                        enemySwordHolder.rotation.x = Math.PI / 2 - 0.6 + swingProgress * 1.2;
+                        
+                        // Check for hits during swing phase
+                        if (attackProgress > 0.4 && attackProgress < 0.6) {
+                            const playerDistance = enemy.position.distanceTo(player.position);
+                            if (playerDistance < 3 && currentTime - lastPlayerHitTime > playerInvincibilityDuration) {
+                                // Player is hit
+                                playerHealth--;
+                                lastPlayerHitTime = currentTime;
+                                updateHealthDisplay();
+                                
+                                // Game over check
+                                if (playerHealth <= 0) {
+                                    gameOver = true;
+                                    showEndGameAlert("Lirilì Larilà Wins!");
+                                }
+                            }
+                        }
+                    } else {
+                        // Recovery phase - return to neutral
+                        const recoveryProgress = (attackProgress - 0.7) / 0.3;
+                        enemySwordHolder.rotation.x = Math.PI / 2 + 0.6 - recoveryProgress * 0.6;
+                    }
+                } else {
+                    // Attack finished
+                    enemyIsAttacking = false;
+                    enemySwordHolder.rotation.x = Math.PI / 2; // Reset to default position
+                }
+            }
+        }
+
+        function updateHealthDisplay() {
+             document.getElementById('player-health').textContent = Math.max(0, playerHealth);
+             document.getElementById('enemy-health').textContent = Math.max(0, enemyHealth);
+         }
+
+         function checkGameOver() {
+             if (playerHealth <= 0 || enemyHealth <= 0) {
+                 gameOver = true;
+                 const message = playerHealth <= 0 ? "Lirilì Larilà Wins!" : "You Win!";
+                 showEndGameAlert(message);
+             }
+         }
+
+         function showEndGameAlert(message) {
+             const alertBox = document.getElementById('win-lose-alert');
+             const messageElement = document.getElementById('win-lose-message');
+             messageElement.textContent = message;
+             alertBox.style.display = 'block';
+         }
+
+         function resetGame() {
+             // Hide alert
+             document.getElementById('win-lose-alert').style.display = 'none';
+
+             // Reset health
+             playerHealth = 3;
+             enemyHealth = 5;
+             updateHealthDisplay();
+
+             // Reset positions
+             player.position.set(0, 0, arenaDepth / 2 - 2); // Use fixed Y value of 0.5
+             enemy.position.set(0, 0, -arenaDepth / 2 + 2); // Reset enemy group position
+             enemy.rotation.y = Math.PI; // Make sure enemy faces player
+
+             // Reset sword states
+             playerBatSwinging = false;
+             enemySwinging = false;
+             playerBatMesh.rotation.set(0, 0, 0); // Reset bat to vertical upward position
+             enemySwordHolder.rotation.set(Math.PI / 2, 0, 0); // Reset enemy sword rotation using the holder
+
+             // Reset game state
+             gameOver = false;
+             lastEnemyMoveTime = performance.now();
+             lastPlayerAttackTime = performance.now();
+             lastEnemyAttackTime = 0;
+             lastEnemyHitTime = 0; // Reset enemy hit timer
+         }
+
+        function animate(time) {
+            if (gameOver) return; // Stop animation if game over
+
+            requestAnimationFrame(animate);
+
+            // Apply Gravity
+            if (!isOnGroundPlayer) {
+                playerVelocityY -= gravity;
+            }
+             if (!isOnGroundEnemy) {
+                enemyVelocityY -= gravity;
+            }
+
+            // Update Positions
+            player.position.y += playerVelocityY;
+            enemy.position.y += enemyVelocityY;
+
+            // Ground Collision
+            const playerGroundY = 0.5; // Fixed value based on player's initial Y position
+            if (player.position.y <= playerGroundY) {
+                player.position.y = playerGroundY;
+                playerVelocityY = 0;
+                isOnGroundPlayer = true;
+            }
+
+            const enemyGroundY = 0; // Enemy group origin is at base (Y=0)
+             if (enemy.position.y <= enemyGroundY) {
+                enemy.position.y = enemyGroundY;
+                enemyVelocityY = 0;
+                isOnGroundEnemy = true;
+            }
+
+            updatePlayerPosition();
+            updateEnemy();
+            updateSwords(time);
+
+            // Update camera to follow player
+            updateCameraPosition();
+
+            renderer.render(scene, camera);
+        }
+
+        function updateCameraPosition() {
+            if (!player) return; // Ensure player is initialized
+
+            const cameraOffset = new THREE.Vector3();
+
+            // Calculate camera position based on yaw and pitch
+            cameraOffset.x = cameraDistance * Math.sin(yaw) * Math.cos(pitch);
+            cameraOffset.y = cameraDistance * Math.sin(pitch);
+            cameraOffset.z = cameraDistance * Math.cos(yaw) * Math.cos(pitch);
+
+            // Target position is player's position plus the calculated offset
+            const targetPosition = player.position.clone().add(cameraOffset);
+
+            // Smoothly move the camera towards the target position
+            camera.position.lerp(targetPosition, 0.2); 
+
+            // Always look at the player (slightly above the base)
+            camera.lookAt(player.position.x, player.position.y + 1, player.position.z);
+        }
+
+        function createEnemySword() {
+            // Create a group to hold the sword parts
+            const swordHolder = new THREE.Group();
+            
+            // Create blade
+            const bladeGeometry = new THREE.BoxGeometry(0.1, 0.1, 2);
+            const bladeMaterial = new THREE.MeshStandardMaterial({ color: 0x8c8c8c, metalness: 0.8, roughness: 0.2 });
+            enemyBlade = new THREE.Mesh(bladeGeometry, bladeMaterial);
+            enemyBlade.position.z = -1; // Position the blade forward
+            
+            // Create handle
+            const handleGeometry = new THREE.CylinderGeometry(0.05, 0.05, 0.6, 16);
+            const handleMaterial = new THREE.MeshStandardMaterial({ color: 0x4d2600, roughness: 0.8 });
+            const handle = new THREE.Mesh(handleGeometry, handleMaterial);
+            handle.position.z = 0.1;
+            handle.rotation.x = Math.PI / 2;
+            
+            // Create guard
+            const guardGeometry = new THREE.BoxGeometry(0.3, 0.1, 0.1);
+            const guardMaterial = new THREE.MeshStandardMaterial({ color: 0x8c8c8c, metalness: 0.7, roughness: 0.3 });
+            const guard = new THREE.Mesh(guardGeometry, guardMaterial);
+            
+            // Add all parts to the holder
+            swordHolder.add(enemyBlade);
+            swordHolder.add(handle);
+            swordHolder.add(guard);
+            
+            // Position the sword in front of the enemy
+            swordHolder.position.set(0.5, bodyHeight * 0.6, -0.2);
+            swordHolder.rotation.set(Math.PI / 2, 0, 0); // Default position
+            
+            // Add the sword to the enemy
+            enemy.add(swordHolder);
+            
+            return swordHolder;
+        }
+
+        // Initialize the game
+        init();
+
+    </script>
+</body>
+</html> 
